@@ -435,8 +435,8 @@ public:
     this->device_ctx_p = device_ctx_p;
 
     DXGI_FORMAT src_format = format;
-    format = (pix_fmt == pix_fmt_e::nv12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010);
-    status = device_p->CreateVertexShader(scene_vs_hlsl->GetBufferPointer(), scene_vs_hlsl->GetBufferSize(), nullptr, &scene_vs);
+    format                 = (pix_fmt == pix_fmt_e::nv12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010);
+    status                 = device_p->CreateVertexShader(scene_vs_hlsl->GetBufferPointer(), scene_vs_hlsl->GetBufferSize(), nullptr, &scene_vs);
     if(status) {
       BOOST_LOG(error) << "Failed to create scene vertex shader [0x"sv << util::hex(status).to_string_view() << ']';
       return -1;
@@ -709,8 +709,8 @@ capture_e display_vram_t::snapshot(platf::img_t *img_base, std::chrono::millisec
   return capture_e::ok;
 }
 
-int display_vram_t::init(int framerate, const std::string &display_name) {
-  if(display_base_t::init(framerate, display_name)) {
+int display_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
+  if(display_base_t::init(config, display_name)) {
     return -1;
   }
 

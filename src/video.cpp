@@ -89,11 +89,12 @@ public:
       data[1] = sw_frame->data[1] + offsetUV * 2;
       data[2] = nullptr;
     }
-    else if (img.is_bgr) { // BGR0
+    else if(img.is_bgr) { // BGR0
       data[1] = sw_frame->data[1] + offsetUV;
       data[2] = sw_frame->data[2] + offsetUV;
       data[3] = nullptr;
-    } else { // RGB0
+    }
+    else { // RGB0
       data[1] = sw_frame->data[2] + offsetUV;
       data[2] = sw_frame->data[1] + offsetUV;
       data[3] = nullptr;
@@ -384,7 +385,7 @@ using encode_e                   = platf::capture_e;
 
 struct capture_ctx_t {
   img_event_t images;
-  int framerate;
+  config_t config;
 };
 
 struct capture_thread_async_ctx_t {
@@ -604,11 +605,11 @@ static std::vector<encoder_t> encoders {
   software
 };
 
-void reset_display(std::shared_ptr<platf::display_t> &disp, AVHWDeviceType type, const std::string &display_name, int framerate) {
+void reset_display(std::shared_ptr<platf::display_t> &disp, AVHWDeviceType type, const std::string &display_name, const config_t &config) {
   // We try this twice, in case we still get an error on reinitialization
   for(int x = 0; x < 2; ++x) {
     disp.reset();
-    disp = platf::display(map_dev_type(type), display_name, framerate);
+    disp = platf::display(map_dev_type(type), display_name, config);
     if(disp) {
       break;
     }
@@ -659,7 +660,7 @@ void captureThread(
     capture_ctxs.emplace_back(std::move(*capture_ctx));
   }
 
-  auto disp = platf::display(map_dev_type(encoder.dev_type), display_names[display_p], capture_ctxs.front().framerate);
+  auto disp = platf::display(map_dev_type(encoder.dev_type), display_names[display_p], capture_ctxs.front().config);
   if(!disp) {
     return;
   }
@@ -736,7 +737,7 @@ void captureThread(
       }
 
       while(capture_ctx_queue->running()) {
-        reset_display(disp, encoder.dev_type, display_names[display_p], capture_ctxs.front().framerate);
+        reset_display(disp, encoder.dev_type, display_names[display_p], capture_ctxs.front().config);
 
         if(disp) {
           break;
@@ -1199,10 +1200,8 @@ encode_e encode_run_sync(
     synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*ctx)));
   }
 
-  int framerate = synced_session_ctxs.front()->config.framerate;
-
   while(encode_session_ctx_queue.running()) {
-    reset_display(disp, encoder.dev_type, display_names[display_p], framerate);
+    reset_display(disp, encoder.dev_type, display_names[display_p], synced_session_ctxs.front()->config);
     if(disp) {
       break;
     }
@@ -1336,7 +1335,7 @@ void captureThreadSync() {
       ctx.shutdown_event->raise(true);
       ctx.join_event->raise(true);
     }
-    });
+  });
 
   while(encode_run_sync(synced_session_ctxs, ctx) == encode_e::reinit) {}
 }
@@ -1352,15 +1351,14 @@ void capture_async(
   auto lg     = util::fail_guard([&]() {
     images->stop();
     shutdown_event->raise(true);
-      });
+  });
 
   auto ref = capture_thread_async.ref();
   if(!ref) {
     return;
   }
 
-  ref->capture_ctx_queue->raise(capture_ctx_t {
-    images, config.framerate });
+  ref->capture_ctx_queue->raise(capture_ctx_t { images, config });
 
   if(!ref->capture_ctx_queue->running()) {
     return;
@@ -1450,7 +1448,7 @@ enum validate_flag_e {
 };
 
 int validate_config(std::shared_ptr<platf::display_t> &disp, const encoder_t &encoder, const config_t &config) {
-  reset_display(disp, encoder.dev_type, config::video.output_name, config.framerate);
+  reset_display(disp, encoder.dev_type, config::video.output_name, config);
   if(!disp) {
     return -1;
   }
