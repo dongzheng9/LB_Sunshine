@@ -63,8 +63,29 @@ enum class profile_hevc_e : int {
 };
 } // namespace nv
 
+namespace qsv {
 
-platf::mem_type_e map_dev_type(AVHWDeviceType type);
+enum class profile_h264_e : int {
+  baseline = 66,
+  main     = 77,
+  high     = 100,
+};
+
+enum class profile_hevc_e : int {
+  main    = 1,
+  main_10 = 2,
+};
+
+enum class multiframe_mode_e : int {
+  mf_default  = 0,
+  mf_disabled = 1,
+  mf_auto     = 2,
+  mf_manual   = 3,
+};
+} // namespace qsv
+
+
+platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
 platf::pix_fmt_e map_pix_fmt(AVPixelFormat fmt);
 
 util::Either<buffer_t, int> dxgi_make_hwdevice_ctx(platf::hwdevice_t *hwdevice_ctx);
@@ -285,11 +306,10 @@ struct encoder_t {
     option_t(std::string &&name, decltype(value) &&value) : name { std::move(name) }, value { std::move(value) } {}
   };
 
-  AVHWDeviceType dev_type;
+  AVHWDeviceType base_dev_type, derived_dev_type;
   AVPixelFormat dev_pix_fmt;
 
-  AVPixelFormat static_pix_fmt;
-  AVPixelFormat dynamic_pix_fmt;
+  AVPixelFormat static_pix_fmt, dynamic_pix_fmt;
 
   struct {
     std::vector<option_t> common_options;
@@ -403,10 +423,10 @@ auto capture_thread_sync  = safe::make_shared<capture_thread_sync_ctx_t>(start_c
 static encoder_t nvenc {
   "nvenc"sv,
 #ifdef _WIN32
-  AV_HWDEVICE_TYPE_D3D11VA,
+  AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_NONE,
   AV_PIX_FMT_D3D11,
 #else
-  AV_HWDEVICE_TYPE_CUDA,
+  AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_NONE,
   AV_PIX_FMT_CUDA,
 #endif
   AV_PIX_FMT_NV12, AV_PIX_FMT_P010,
@@ -458,9 +478,61 @@ static encoder_t nvenc {
 };
 
 #ifdef _WIN32
+static encoder_t quicksync {
+  "quicksync"sv,
+  AV_HWDEVICE_TYPE_D3D11VA,
+  AV_HWDEVICE_TYPE_QSV,
+  AV_PIX_FMT_QSV,
+  AV_PIX_FMT_NV12,
+  AV_PIX_FMT_P010,
+  {
+    // Common options
+    {
+      { "preset"s, &config::video.qsv.preset },
+      { "forced_idr"s, 1 },
+      { "async_depth"s, 1 },
+      { "recovery_point_sei"s, 0 },
+      { "pic_timing_sei"s, 0 },
+      { "mfmode"s, (int)qsv::multiframe_mode_e::mf_disabled },
+    },
+    // SDR-specific options
+    {
+      { "profile"s, (int)qsv::profile_hevc_e::main },
+    },
+    // HDR-specific options
+    {
+      { "profile"s, (int)qsv::profile_hevc_e::main_10 },
+    },
+    std::make_optional<encoder_t::option_t>({ "qp"s, &config::video.qp }),
+    "hevc_qsv"s,
+  },
+  {
+    // Common options
+    {
+      { "preset"s, &config::video.qsv.preset },
+      { "cavlc"s, &config::video.qsv.cavlc },
+      { "forced_idr"s, 1 },
+      { "async_depth"s, 1 },
+      { "recovery_point_sei"s, 0 },
+      { "pic_timing_sei"s, 0 },
+      { "max_dec_frame_buffering"s, 1 },
+      { "mfmode"s, (int)qsv::multiframe_mode_e::mf_disabled },
+    },
+    // SDR-specific options
+    {
+      { "profile"s, (int)qsv::profile_h264_e::high },
+    },
+    {}, // HDR-specific options
+    std::make_optional<encoder_t::option_t>({ "qp"s, &config::video.qp }),
+    "h264_qsv"s,
+  },
+  PARALLEL_ENCODING,
+  dxgi_make_hwdevice_ctx,
+};
+
 static encoder_t amdvce {
   "amdvce"sv,
-  AV_HWDEVICE_TYPE_D3D11VA,
+  AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_NONE,
   AV_PIX_FMT_D3D11,
   AV_PIX_FMT_NV12, AV_PIX_FMT_P010,
   {
@@ -505,7 +577,7 @@ static encoder_t amdvce {
 
 static encoder_t software {
   "software"sv,
-  AV_HWDEVICE_TYPE_NONE,
+  AV_HWDEVICE_TYPE_NONE, AV_HWDEVICE_TYPE_NONE,
   AV_PIX_FMT_NONE,
   AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P10,
   {
@@ -543,7 +615,7 @@ static encoder_t software {
 #ifdef __linux__
 static encoder_t vaapi {
   "vaapi"sv,
-  AV_HWDEVICE_TYPE_VAAPI,
+  AV_HWDEVICE_TYPE_VAAPI, AV_HWDEVICE_TYPE_NONE,
   AV_PIX_FMT_VAAPI,
   AV_PIX_FMT_NV12, AV_PIX_FMT_YUV420P10,
   {
@@ -579,7 +651,7 @@ static encoder_t vaapi {
 #ifdef __APPLE__
 static encoder_t videotoolbox {
   "videotoolbox"sv,
-  AV_HWDEVICE_TYPE_NONE,
+  AV_HWDEVICE_TYPE_NONE, AV_HWDEVICE_TYPE_NONE,
   AV_PIX_FMT_VIDEOTOOLBOX,
   AV_PIX_FMT_NV12, AV_PIX_FMT_NV12,
   {
@@ -617,6 +689,7 @@ static std::vector<encoder_t> encoders {
   nvenc,
 #endif
 #ifdef _WIN32
+  quicksync,
   amdvce,
 #endif
 #ifdef __linux__
@@ -632,7 +705,7 @@ void reset_display(std::shared_ptr<platf::display_t> &disp, AVHWDeviceType type,
   // We try this twice, in case we still get an error on reinitialization
   for(int x = 0; x < 2; ++x) {
     disp.reset();
-    disp = platf::display(map_dev_type(type), display_name, framerate);
+    disp = platf::display(map_base_dev_type(type), display_name, framerate);
     if(disp) {
       break;
     }
@@ -664,7 +737,7 @@ void captureThread(
 
   // Get all the monitor names now, rather than at boot, to
   // get the most up-to-date list available monitors
-  auto display_names = platf::display_names(map_dev_type(encoder.dev_type));
+  auto display_names = platf::display_names(map_base_dev_type(encoder.base_dev_type));
   int display_p      = 0;
 
   if(display_names.empty()) {
@@ -683,7 +756,7 @@ void captureThread(
     capture_ctxs.emplace_back(std::move(*capture_ctx));
   }
 
-  auto disp = platf::display(map_dev_type(encoder.dev_type), display_names[display_p], capture_ctxs.front().framerate);
+  auto disp = platf::display(map_base_dev_type(encoder.base_dev_type), display_names[display_p], capture_ctxs.front().framerate);
   if(!disp) {
     return;
   }
@@ -769,7 +842,7 @@ void captureThread(
       }
 
       while(capture_ctx_queue->running()) {
-        reset_display(disp, encoder.dev_type, display_names[display_p], capture_ctxs.front().framerate);
+        reset_display(disp, encoder.base_dev_type, display_names[display_p], capture_ctxs.front().framerate);
 
         if(disp) {
           break;
@@ -868,7 +941,7 @@ int encode(int64_t frame_nr, session_t &session, frame_t::pointer frame, safe::m
 }
 
 std::optional<session_t> make_session(const encoder_t &encoder, const config_t &config, int width, int height, std::shared_ptr<platf::hwdevice_t> &&hwdevice) {
-  bool hardware = encoder.dev_type != AV_HWDEVICE_TYPE_NONE;
+  bool hardware = encoder.base_dev_type != AV_HWDEVICE_TYPE_NONE;
 
   auto &video_format = config.videoFormat == 0 ? encoder.h264 : encoder.hevc;
   if(!video_format[encoder_t::PASSED]) {
@@ -970,16 +1043,38 @@ std::optional<session_t> make_session(const encoder_t &encoder, const config_t &
   // Used by cbs::make_sps_hevc
   ctx->sw_pix_fmt = sw_fmt;
 
-  buffer_t hwdevice_ctx;
   if(hardware) {
+    buffer_t hwdevice_ctx;
+
     ctx->pix_fmt = encoder.dev_pix_fmt;
 
+    // Create the base hwdevice context
     auto buf_or_error = encoder.make_hwdevice_ctx(hwdevice.get());
     if(buf_or_error.has_right()) {
       return std::nullopt;
     }
-
     hwdevice_ctx = std::move(buf_or_error.left());
+
+    // If this encoder requires derivation from the base, derive the desired type
+    if(encoder.derived_dev_type != AV_HWDEVICE_TYPE_NONE) {
+      buffer_t derived_hwdevice_ctx;
+
+      // Allow the hwdevice to prepare for this type of context to be derived
+      if(hwdevice->prepare_to_derive_context(encoder.derived_dev_type)) {
+        return std::nullopt;
+      }
+
+      auto err = av_hwdevice_ctx_create_derived(&derived_hwdevice_ctx, encoder.derived_dev_type, hwdevice_ctx.get(), 0);
+      if(err) {
+        char err_str[AV_ERROR_MAX_STRING_SIZE] { 0 };
+        BOOST_LOG(error) << "Failed to derive device context: "sv << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, err);
+
+        return std::nullopt;
+      }
+
+      hwdevice_ctx = std::move(derived_hwdevice_ctx);
+    }
+
     if(hwframe_ctx(ctx, hwdevice.get(), hwdevice_ctx, sw_fmt)) {
       return std::nullopt;
     }
@@ -1213,7 +1308,7 @@ encode_e encode_run_sync(
   encode_session_ctx_queue_t &encode_session_ctx_queue) {
 
   const auto &encoder = encoders.front();
-  auto display_names  = platf::display_names(map_dev_type(encoder.dev_type));
+  auto display_names  = platf::display_names(map_base_dev_type(encoder.base_dev_type));
   int display_p       = 0;
 
   if(display_names.empty()) {
@@ -1244,7 +1339,7 @@ encode_e encode_run_sync(
   int framerate = synced_session_ctxs.front()->config.framerate;
 
   while(encode_session_ctx_queue.running()) {
-    reset_display(disp, encoder.dev_type, display_names[display_p], framerate);
+    reset_display(disp, encoder.base_dev_type, display_names[display_p], framerate);
     if(disp) {
       break;
     }
@@ -1504,7 +1599,7 @@ enum validate_flag_e {
 };
 
 int validate_config(std::shared_ptr<platf::display_t> &disp, const encoder_t &encoder, const config_t &config) {
-  reset_display(disp, encoder.dev_type, config::video.output_name, config.framerate);
+  reset_display(disp, encoder.base_dev_type, config::video.output_name, config.framerate);
   if(!disp) {
     return -1;
   }
@@ -1929,7 +2024,7 @@ int start_capture_sync(capture_thread_sync_ctx_t &ctx) {
 }
 void end_capture_sync(capture_thread_sync_ctx_t &ctx) {}
 
-platf::mem_type_e map_dev_type(AVHWDeviceType type) {
+platf::mem_type_e map_base_dev_type(AVHWDeviceType type) {
   switch(type) {
   case AV_HWDEVICE_TYPE_D3D11VA:
     return platf::mem_type_e::dxgi;
