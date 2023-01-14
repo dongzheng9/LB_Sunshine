@@ -5,6 +5,7 @@
 #include <thread>
 
 extern "C" {
+#include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 }
 
@@ -76,36 +77,26 @@ int hwframe_ctx(ctx_t &ctx, platf::hwdevice_t *hwdevice, buffer_t &hwdevice_ctx,
 class swdevice_t : public platf::hwdevice_t {
 public:
   int convert(platf::img_t &img) override {
-    av_frame_make_writable(sw_frame.get());
+    input_frame->format      = AV_PIX_FMT_BGR0;
+    input_frame->width       = img.width;
+    input_frame->height      = img.height;
+    input_frame->data[0]     = img.data;
+    input_frame->linesize[0] = img.row_pitch;
 
-    const int linesizes[2] {
-      img.row_pitch, 0
-    };
-
-    std::uint8_t *data[4];
-
-    data[0] = sw_frame->data[0] + offsetY;
-    if(sw_frame->format == AV_PIX_FMT_NV12) {
-      data[1] = sw_frame->data[1] + offsetUV * 2;
-      data[2] = nullptr;
-    }
-    else {
-      data[1] = sw_frame->data[1] + offsetUV;
-      data[2] = sw_frame->data[2] + offsetUV;
-      data[3] = nullptr;
-    }
-
-    int ret = sws_scale(sws.get(), (std::uint8_t *const *)&img.data, linesizes, 0, img.height, data, sw_frame->linesize);
-    if(ret <= 0) {
-      BOOST_LOG(error) << "Couldn't convert image to required format and/or size"sv;
-
+    auto old_height  = sw_frame->height;
+    sw_frame->height = FFALIGN(sw_frame->height, 32);
+    auto status      = sws_scale_frame(sws.get(), sw_frame.get(), input_frame.get());
+    sw_frame->height = old_height;
+    if(status < 0) {
+      char string[AV_ERROR_MAX_STRING_SIZE];
+      BOOST_LOG(error) << "sws_frame_start() failed: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
       return -1;
     }
 
     // If frame is not a software frame, it means we still need to transfer from main memory
     // to vram memory
     if(frame->hw_frames_ctx) {
-      auto status = av_hwframe_transfer_data(frame, sw_frame.get(), 0);
+      status = av_hwframe_transfer_data(frame, sw_frame.get(), 0);
       if(status < 0) {
         char string[AV_ERROR_MAX_STRING_SIZE];
         BOOST_LOG(error) << "Failed to transfer image data to hardware frame: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
@@ -128,6 +119,22 @@ public:
     else {
       sw_frame.reset(frame);
     }
+
+    // Prepare the swframe for rendering
+    auto old_height  = sw_frame->height;
+    sw_frame->height = FFALIGN(sw_frame->height, 32);
+    av_frame_make_writable(sw_frame.get());
+    sw_frame->data[0] = sw_frame->data[0] + offsetY;
+    if(sw_frame->format == AV_PIX_FMT_NV12) {
+      sw_frame->data[1] = sw_frame->data[1] + offsetUV * 2;
+      sw_frame->data[2] = nullptr;
+    }
+    else {
+      sw_frame->data[1] = sw_frame->data[1] + offsetUV;
+      sw_frame->data[2] = sw_frame->data[2] + offsetUV;
+      sw_frame->data[3] = nullptr;
+    }
+    sw_frame->height = old_height;
 
     return 0;
   }
@@ -205,19 +212,34 @@ public:
     out_width   = in_width * scalar;
     out_height  = in_height * scalar;
 
+    // Align the height for sws_scale_frame()
+    out_height = FFALIGN(out_height, 32);
+
     // result is always positive
     auto offsetW = (frame->width - out_width) / 2;
     auto offsetH = (frame->height - out_height) / 2;
     offsetUV     = (offsetW + offsetH * frame->width / 2) / 2;
     offsetY      = offsetW + offsetH * frame->width;
 
-    sws.reset(sws_getContext(
-      in_width, in_height, AV_PIX_FMT_BGR0,
-      out_width, out_height, format,
-      SWS_LANCZOS | SWS_ACCURATE_RND,
-      nullptr, nullptr, nullptr));
+    input_frame.reset(av_frame_alloc());
 
-    return sws ? 0 : -1;
+    sws.reset(sws_alloc_context());
+
+    av_opt_set_int(sws.get(), "srcw", in_width, 0);
+    av_opt_set_int(sws.get(), "srch", in_height, 0);
+    av_opt_set_int(sws.get(), "dstw", out_width, 0);
+    av_opt_set_int(sws.get(), "dsth", out_height, 0);
+    av_opt_set_pixel_fmt(sws.get(), "src_format", AV_PIX_FMT_BGR0, 0);
+    av_opt_set_pixel_fmt(sws.get(), "dst_format", format, 0);
+    av_opt_set(sws.get(), "sws_flags", "lanczos+accurate_rnd", 0);
+    av_opt_set_int(sws.get(), "threads", config::video.min_threads, 0);
+
+    if(sws_init_context(sws.get(), nullptr, nullptr) < 0) {
+      BOOST_LOG(error) << "sws_init_context() failed"sv;
+      return -1;
+    }
+
+    return 0;
   }
 
   ~swdevice_t() override {}
@@ -227,6 +249,9 @@ public:
 
   frame_t sw_frame;
   sws_t sws;
+
+  // Cached frame to use for input in convert()
+  frame_t input_frame;
 
   // offset of input image to output frame in pixels
   int offsetUV;
