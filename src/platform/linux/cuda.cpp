@@ -94,7 +94,7 @@ public:
     return 0;
   }
 
-  int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx) override {
+  int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx, int target_format) override {
     this->hwframe.reset(frame);
     this->frame = frame;
 
@@ -181,8 +181,8 @@ public:
     return sws.load_ram(img, tex.array) || sws.convert(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex_obj(tex), stream.get());
   }
 
-  int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx) {
-    if(cuda_t::set_frame(frame, hw_frames_ctx)) {
+  int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx, int target_format) {
+    if(cuda_t::set_frame(frame, hw_frames_ctx, target_format)) {
       return -1;
     }
 

@@ -313,7 +313,7 @@ public:
     return 0;
   }
 
-  int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx) override {
+  int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx, int target_format) override {
     this->hwframe.reset(frame);
     this->frame = frame;
 

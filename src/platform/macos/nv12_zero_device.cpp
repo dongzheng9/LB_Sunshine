@@ -53,7 +53,7 @@ int nv12_zero_device::convert(platf::img_t &img) {
   return result > 0 ? 0 : -1;
 }
 
-int nv12_zero_device::set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx) {
+int nv12_zero_device::set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx, int target_format) {
   this->frame = frame;
 
   av_frame.reset(frame);
